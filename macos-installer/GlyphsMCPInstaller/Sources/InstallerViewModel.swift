@@ -120,6 +120,9 @@ final class InstallerViewModel: ObservableObject {
 	private var uninstallTask: Task<Void, Never>? = nil
 	private var lastGlyphsRunningVersions: Set<GlyphsMajorVersion>?
 	private var hasInitializedGlyphsSelection = false
+	private var refreshTask: Task<Void, Never>? = nil
+	private var isScanInFlight = false
+	private var needsScanAfterCurrent = false
 
 	var selectedTargetStatuses: [GlyphsTargetStatusSnapshot] {
 		snapshot.glyphsTargets
@@ -198,9 +201,31 @@ final class InstallerViewModel: ObservableObject {
 		heartbeatTask?.cancel()
 		glyphsWatcherTask?.cancel()
 		uninstallTask?.cancel()
+		refreshTask?.cancel()
 	}
 
+	/// Starts a status scan off the main actor and applies the result when it lands.
+	/// Scans are coalesced: a request that arrives while one is running is remembered
+	/// and served by a single follow-up scan instead of piling up.
 	func refreshSnapshot() {
+		guard !isScanInFlight else {
+			needsScanAfterCurrent = true
+			return
+		}
+		isScanInFlight = true
+		refreshTask = Task { [weak self] in
+			let scan = await Self.scanStatus()
+			guard let self else { return }
+			self.isScanInFlight = false
+			self.applyStatusScan(scan)
+			if self.needsScanAfterCurrent {
+				self.needsScanAfterCurrent = false
+				self.refreshSnapshot()
+			}
+		}
+	}
+
+	nonisolated private static func scanStatus() async -> StatusScan {
 		let preflight = Preflight.scanGlobal()
 		let check = Check.scanClients()
 		let applications = GlyphsApplicationDetector.detect()
@@ -216,24 +241,32 @@ final class InstallerViewModel: ObservableObject {
 				isRunning: runningVersions.contains(version)
 			)
 		}
-		let detectedVersions = Set(targets.filter(\.isDetected).map(\.version))
-
-		lastPreflight = preflight
-		lastCheck = check
-		lastGlyphsRunningVersions = runningVersions
-		snapshot = InstallerStatusSnapshotBuilder.build(
-			glyphsTargets: targets,
-			globalPreflight: preflight,
+		return StatusScan(
+			preflight: preflight,
 			check: check,
-			payloadPluginVersion: payloadPluginVersion
+			targets: targets,
+			payloadPluginVersion: payloadPluginVersion,
+			runningVersions: runningVersions
+		)
+	}
+
+	private func applyStatusScan(_ scan: StatusScan) {
+		lastPreflight = scan.preflight
+		lastCheck = scan.check
+		lastGlyphsRunningVersions = scan.runningVersions
+		snapshot = InstallerStatusSnapshotBuilder.build(
+			glyphsTargets: scan.targets,
+			globalPreflight: scan.preflight,
+			check: scan.check,
+			payloadPluginVersion: scan.payloadPluginVersion
 		)
 		selectedGlyphsVersions = InstallerTargetSelectionPolicy.reconciledSelection(
 			current: selectedGlyphsVersions,
-			detected: detectedVersions,
+			detected: Set(scan.targets.filter(\.isDetected).map(\.version)),
 			hasInitialized: hasInitializedGlyphsSelection
 		)
 		hasInitializedGlyphsSelection = true
-		let symlinkVersions = Set(targets.filter(\.installedPluginIsSymlink).map(\.version))
+		let symlinkVersions = Set(scan.targets.filter(\.installedPluginIsSymlink).map(\.version))
 		replaceDevSymlinkVersions.formIntersection(symlinkVersions)
 	}
 
@@ -627,16 +660,20 @@ final class InstallerViewModel: ObservableObject {
 	private func startGlyphsWatcher() {
 		glyphsWatcherTask?.cancel()
 		glyphsWatcherTask = Task { [weak self] in
-			guard let self else { return }
 			while !Task.isCancelled {
 				try? await Task.sleep(nanoseconds: 1_000_000_000)
-				guard !Task.isCancelled else { break }
-				let runningVersions = GlyphsRuntime.runningVersions()
+				guard !Task.isCancelled, let self else { return }
+				let runningVersions = await Self.scanRunningVersions()
+				guard !Task.isCancelled else { return }
 				if runningVersions != self.lastGlyphsRunningVersions {
 					self.refreshSnapshot()
 				}
 			}
 		}
+	}
+
+	nonisolated private static func scanRunningVersions() async -> Set<GlyphsMajorVersion> {
+		GlyphsRuntime.runningVersions()
 	}
 
 	private func setActionMessage(_ header: String, message: String) {
@@ -953,6 +990,17 @@ Installation stopped before changing dependencies, plug-ins, or client settings.
 }
 
 extension InstallerViewModel: @unchecked Sendable {}
+
+/// Immutable result of one status scan, produced off the main actor and handed
+/// back to it. Every field is a value snapshot that is never mutated after the
+/// scan finishes.
+private struct StatusScan: @unchecked Sendable {
+	let preflight: PreflightResult
+	let check: CheckResult
+	let targets: [GlyphsTargetStatusSnapshot]
+	let payloadPluginVersion: PluginBundleVersion?
+	let runningVersions: Set<GlyphsMajorVersion>
+}
 
 private struct InstallOptions: Sendable {
 	let targets: [GlyphsInstallTargetPlan]

@@ -25,6 +25,9 @@ struct ContentView: View {
 						installCodexSkills: $model.installCodexSkills,
 						installClaudeCodeSkills: $model.installClaudeCodeSkills,
 						targets: snapshot.glyphsTargets,
+						selectedVersions: model.selectedGlyphsVersions,
+						replaceDevSymlinkVersions: model.replaceDevSymlinkVersions,
+						verifiedUpdatesEnabledVersions: model.verifiedUpdatesEnabledVersions,
 						selectedGlyphsRunning: model.selectedGlyphsAreRunning,
 						installMessage: model.installFailureReason,
 						canInstall: model.canInstall,
@@ -39,6 +42,9 @@ struct ContentView: View {
 				case .install:
 					InstallTabView(
 						targets: snapshot.glyphsTargets,
+						selectedVersions: model.selectedGlyphsVersions,
+						replaceDevSymlinkVersions: model.replaceDevSymlinkVersions,
+						verifiedUpdatesEnabledVersions: model.verifiedUpdatesEnabledVersions,
 						action: action,
 						selectedGlyphsRunning: model.selectedGlyphsAreRunning,
 						installMessage: model.installFailureReason,
@@ -122,6 +128,9 @@ private struct WizardTabView: View {
 	@Binding var installCodexSkills: Bool
 	@Binding var installClaudeCodeSkills: Bool
 	let targets: [GlyphsTargetStatusSnapshot]
+	let selectedVersions: Set<GlyphsMajorVersion>
+	let replaceDevSymlinkVersions: Set<GlyphsMajorVersion>
+	let verifiedUpdatesEnabledVersions: Set<GlyphsMajorVersion>
 	let selectedGlyphsRunning: Bool
 	let installMessage: String?
 	let canInstall: Bool
@@ -135,7 +144,7 @@ private struct WizardTabView: View {
 
 	private var selectedSummary: String {
 		var items = targets
-			.filter { bindingForTarget($0.version).wrappedValue }
+			.filter { selectedVersions.contains($0.version) }
 			.map { $0.version.displayName }
 		if configureCodex { items.append("Codex") }
 		if configureClaudeDesktop { items.append("Claude Desktop") }
@@ -166,6 +175,9 @@ private struct WizardTabView: View {
 
 				GlyphsTargetSelectionGroup(
 					targets: targets,
+					selectedVersions: selectedVersions,
+					replaceDevSymlinkVersions: replaceDevSymlinkVersions,
+					verifiedUpdatesEnabledVersions: verifiedUpdatesEnabledVersions,
 					isBusy: action.isBusy,
 					bindingForTarget: bindingForTarget,
 					replacementBindingForTarget: replacementBindingForTarget,
@@ -243,6 +255,9 @@ private struct WizardTabView: View {
 
 private struct InstallTabView: View {
 	let targets: [GlyphsTargetStatusSnapshot]
+	let selectedVersions: Set<GlyphsMajorVersion>
+	let replaceDevSymlinkVersions: Set<GlyphsMajorVersion>
+	let verifiedUpdatesEnabledVersions: Set<GlyphsMajorVersion>
 	let action: InstallerActionState
 	let selectedGlyphsRunning: Bool
 	let installMessage: String?
@@ -272,6 +287,9 @@ private struct InstallTabView: View {
 
 				GlyphsTargetSelectionGroup(
 					targets: targets,
+					selectedVersions: selectedVersions,
+					replaceDevSymlinkVersions: replaceDevSymlinkVersions,
+					verifiedUpdatesEnabledVersions: verifiedUpdatesEnabledVersions,
 					isBusy: action.isBusy,
 					bindingForTarget: bindingForTarget,
 					replacementBindingForTarget: replacementBindingForTarget,
@@ -325,6 +343,9 @@ private struct InstallTabView: View {
 
 private struct GlyphsTargetSelectionGroup: View {
 	let targets: [GlyphsTargetStatusSnapshot]
+	let selectedVersions: Set<GlyphsMajorVersion>
+	let replaceDevSymlinkVersions: Set<GlyphsMajorVersion>
+	let verifiedUpdatesEnabledVersions: Set<GlyphsMajorVersion>
 	let isBusy: Bool
 	let bindingForTarget: (GlyphsMajorVersion) -> Binding<Bool>
 	let replacementBindingForTarget: (GlyphsMajorVersion) -> Binding<Bool>
@@ -337,6 +358,9 @@ private struct GlyphsTargetSelectionGroup: View {
 					if entry.offset > 0 { Divider() }
 					GlyphsTargetSelectionRow(
 						target: entry.element,
+						isSelectedValue: selectedVersions.contains(entry.element.version),
+						replaceDevSymlinkValue: replaceDevSymlinkVersions.contains(entry.element.version),
+						enableVerifiedUpdatesValue: verifiedUpdatesEnabledVersions.contains(entry.element.version),
 						isSelected: bindingForTarget(entry.element.version),
 						replaceDevSymlink: replacementBindingForTarget(entry.element.version),
 						enableVerifiedUpdates: verifiedUpdatesBindingForTarget(entry.element.version),
@@ -351,6 +375,15 @@ private struct GlyphsTargetSelectionGroup: View {
 
 private struct GlyphsTargetSelectionRow: View {
 	let target: GlyphsTargetStatusSnapshot
+
+	// The selection values are stored properties, not just reads through the
+	// bindings below. SwiftUI skips a view whose stored properties are unchanged,
+	// and the bindings are opaque closures that always compare equal, so without
+	// these the row never redraws when the selection changes elsewhere.
+	let isSelectedValue: Bool
+	let replaceDevSymlinkValue: Bool
+	let enableVerifiedUpdatesValue: Bool
+
 	@Binding var isSelected: Bool
 	@Binding var replaceDevSymlink: Bool
 	@Binding var enableVerifiedUpdates: Bool
@@ -388,13 +421,13 @@ private struct GlyphsTargetSelectionRow: View {
 					.foregroundStyle(.orange)
 			}
 
-			if isSelected, let warning = target.devPluginWarning {
+			if isSelectedValue, let warning = target.devPluginWarning {
 				WarningBanner(title: "Development plug-in", message: warning)
 				Toggle("Replace \(target.version.displayName) symlink with latest GitHub plug-in", isOn: $replaceDevSymlink)
 					.disabled(isBusy)
 			}
 
-			if isSelected {
+			if isSelectedValue {
 				Toggle("Make future updates easier", isOn: $enableVerifiedUpdates)
 					.disabled(isBusy)
 				Text("When a new version is available, prepare it in Glyphs and install it when you’re ready.")
