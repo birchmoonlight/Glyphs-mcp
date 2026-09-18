@@ -185,9 +185,11 @@ final class InstallerViewModel: ObservableObject {
 	}
 
 	init() {
+		Self.diag("init: begin")
 		isAdvancedModeEnabled = InstallerAdvancedModePreferences.load()
 		refreshSnapshot()
 		startGlyphsWatcher()
+		Self.diag("init: end")
 	}
 
 	func setAdvancedModeEnabled(_ enabled: Bool) {
@@ -195,6 +197,7 @@ final class InstallerViewModel: ObservableObject {
 	}
 
 	deinit {
+		Self.diag("deinit: InstallerViewModel deallocated")
 		installTask?.cancel()
 		clientsTask?.cancel()
 		skillsTask?.cancel()
@@ -207,17 +210,38 @@ final class InstallerViewModel: ObservableObject {
 	/// Starts a status scan off the main actor and applies the result when it lands.
 	/// Scans are coalesced: a request that arrives while one is running is remembered
 	/// and served by a single follow-up scan instead of piling up.
+	/// TEMPORARY DIAGNOSTIC — remove before merging.
+	nonisolated static func diag(_ message: String) {
+		let line = "[diag] \(Date()) \(message)\n"
+		let url = URL(fileURLWithPath: "/tmp/gmcp-installer-diag.log")
+		if let handle = try? FileHandle(forWritingTo: url) {
+			handle.seekToEndOfFile()
+			handle.write(Data(line.utf8))
+			try? handle.close()
+		} else {
+			try? line.write(to: url, atomically: true, encoding: .utf8)
+		}
+	}
+
 	func refreshSnapshot() {
+		Self.diag("refreshSnapshot: enter, isScanInFlight=\(isScanInFlight)")
 		guard !isScanInFlight else {
 			needsScanAfterCurrent = true
 			return
 		}
 		isScanInFlight = true
 		refreshTask = Task { [weak self] in
+			Self.diag("task: started")
 			let scan = await Self.scanStatus()
-			guard let self else { return }
+			Self.diag("task: scanStatus returned, targets=\(scan.targets.count)")
+			guard let self else {
+				Self.diag("task: SELF WAS NIL, bailing out")
+				return
+			}
+			Self.diag("task: self alive, applying")
 			self.isScanInFlight = false
 			self.applyStatusScan(scan)
+			Self.diag("task: applied, snapshot.glyphsTargets=\(self.snapshot.glyphsTargets.count)")
 			if self.needsScanAfterCurrent {
 				self.needsScanAfterCurrent = false
 				self.refreshSnapshot()
@@ -226,21 +250,30 @@ final class InstallerViewModel: ObservableObject {
 	}
 
 	nonisolated private static func scanStatus() async -> StatusScan {
+		Self.diag("scan: entering, isMainThread=\(Thread.isMainThread)")
 		let preflight = Preflight.scanGlobal()
+		Self.diag("scan: scanGlobal done")
 		let check = Check.scanClients()
+		Self.diag("scan: scanClients done")
 		let applications = GlyphsApplicationDetector.detect()
+		Self.diag("scan: detect done, apps=\(applications.count)")
 		let applicationsByVersion = Dictionary(uniqueKeysWithValues: applications.map { ($0.majorVersion, $0) })
 		let payloadPluginVersion = (try? InstallerPayload.resolve()).flatMap { PluginVersionReader.readPluginVersion(pluginBundle: $0.pluginBundle) }
+		Self.diag("scan: payload resolved, version=\(String(describing: payloadPluginVersion))")
 		let runningVersions = GlyphsRuntime.runningVersions()
+		Self.diag("scan: runningVersions=\(runningVersions.count)")
 		let targets = GlyphsMajorVersion.allCases.map { version in
-			GlyphsTargetStatusBuilder.build(
+			let target = GlyphsTargetStatusBuilder.build(
 				version: version,
 				application: applicationsByVersion[version],
 				preflight: Preflight.scanGlyphs(glyphsVersion: version),
 				payloadPluginVersion: payloadPluginVersion,
 				isRunning: runningVersions.contains(version)
 			)
+			Self.diag("scan: built target \(version) detected=\(target.isDetected)")
+			return target
 		}
+		Self.diag("scan: complete, targets=\(targets.count)")
 		return StatusScan(
 			preflight: preflight,
 			check: check,
