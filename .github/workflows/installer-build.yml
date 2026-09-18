@@ -1,0 +1,67 @@
+name: Installer build (unsigned Debug)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner label
+        required: false
+        default: macos-26
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-26' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          echo "--- /Applications ---"
+          ls -1 /Applications | grep -i '^Xcode' || echo "(no Xcode* bundles listed)"
+          echo "--- selected ---"
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Build unsigned Debug installer
+        run: |
+          xcodebuild build \
+            -project macos-installer/GlyphsMCPInstaller/GlyphsMCPInstaller.xcodeproj \
+            -scheme GlyphsMCPInstaller \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Run installer test suite
+        run: |
+          xcodebuild test \
+            -project macos-installer/GlyphsMCPInstaller/GlyphsMCPInstaller.xcodeproj \
+            -scheme GlyphsMCPInstaller \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package app
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/dd/Build/Products/Debug/GlyphsMCPInstaller.app"
+          test -d "$APP"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP" "$RUNNER_TEMP/GlyphsMCPInstaller-unsigned-Debug.zip"
+          ls -lh "$RUNNER_TEMP/GlyphsMCPInstaller-unsigned-Debug.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GlyphsMCPInstaller-unsigned-Debug
+          path: ${{ runner.temp }}/GlyphsMCPInstaller-unsigned-Debug.zip
+          if-no-files-found: error
+          retention-days: 14
