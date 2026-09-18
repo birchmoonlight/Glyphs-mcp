@@ -29,6 +29,11 @@ jobs:
           xcode-select -p
           xcodebuild -version
 
+      # CODE_SIGN_IDENTITY= is required on top of CODE_SIGNING_ALLOWED=NO. The
+      # Copy Payload build phase signs the staged plug-in executable whenever
+      # CODE_SIGN_IDENTITY is non-empty, and disabling signing does not clear
+      # that setting, so the phase shells out to codesign with "Apple
+      # Development" and fails on a runner that has no such identity.
       - name: Build unsigned Debug installer
         run: |
           xcodebuild build \
@@ -38,7 +43,8 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=
 
       - name: Run installer test suite
         run: |
@@ -48,7 +54,8 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=
 
       - name: Package app
         run: |
